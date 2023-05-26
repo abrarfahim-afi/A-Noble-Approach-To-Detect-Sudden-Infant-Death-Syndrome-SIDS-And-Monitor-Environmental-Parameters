@@ -1,0 +1,549 @@
+// This project is developed by Abrar Fahim
+
+/*************************DISPLAY CONNECTION********************************************
+// Adafruit 3.5 inch (320x480) TFT LCD Display connection :
+// When using the BREAKOUT BOARD only, use these 8 data lines to the LCD:
+// For the Arduino Mega, use digital pins 22 through 29
+//   D0 connects to digital pin 22  
+//   D1 connects to digital pin 23   
+//   D2 connects to digital pin 24
+//   D3 connects to digital pin 25
+//   D4 connects to digital pin 26
+//   D5 connects to digital pin 27
+//   D6 connects to digital pin 28
+//   D7 connects to digital pin 29
+//   CS connects to Analog  pin A3
+//   CD connects to Analog  pin A2
+//   WR connects to Analog  pin A1
+//   RD connects to Analog  pin A0
+//   GND connects to GND
+//   3V-5V connects to 5.V
+*************************************************************************************/
+
+/**********************AD8232 Heart Rate Monitor Sensor Connection**********************
+Sensor Pin           Arduino Mega 2560 Pin
+OUTPUT                A4
+LO+                   4
+LO-                   5
+-------------------------------------------------------------
+3.3V                  VOUT (AMS1117 DC 9V to 3.3V Convereter)
+GND                   GND (AMS1117 DC 9V to 3.3V Convereter)
+****************************************************************************************/
+
+/**********************HTU21D-F Sensor Connection****************************************
+Sensor Pin           Arduino Mega 2560 Pin
+VIN                   5V
+GND                   GND
+SCL                   21
+SDA                   20
+****************************************************************************************/
+
+/**********************MQ-2 Gas Sensor*****************************************************
+Sensor Pin           Arduino Mega 2560 Pin
+A0                    A5
+GND                   GND
+VCC                   5V
+****************************************************************************************/
+
+/**********************Long Flex Sensor Connection****************************************
+For the Long flex sensor to work properly, the sensor needed to be added to a Resistance to 
+Voltage Configuration.For that we have use LM358 Dual Op-amp. The output of the Op-amp is 
+connected with A6 of the Arduino Mega.The flex sensors one part is connected 3.3V and the 
+other part is connected pin 2 (Negative terminal) of the Op-amp. Resistor Rg= 330ohm 
+is connected with both pin 1 (OUTPUT) and pin 2 (Negative terminal). 
+Pin 3 (Positive terminal) and Pin 4 (VCC-) is connected to GND. Pin 8 (VCC+) is connected to 5V
+
+****************************************************************************************/
+
+/*************************SIM900A GSM/GPRS Module*********************************************
+NB: Before using this module make sure the SIM car supports 2G GSM. 
+SIM900 Module Pin    Arduino Mega 2560 Pin
+TX                     18 (TX1)
+RX                     19 (RX1)
+Yellow Connector 9     GND
+****************************************************************************************/
+
+
+
+#include<Wire.h>
+#include <pin_magic.h>
+#include <registers.h>
+#include <SoftwareSerial.h>
+
+#include <MQ2.h>  // For MQ2 Gas Sensor
+#include <Adafruit_GFX.h>    // Core graphics library
+#include <Adafruit_TFTLCD.h> // Hardware-specific library
+#include "Adafruit_HTU21DF.h" // For HTU21D-F Temperature and Pressure Sensor
+
+
+#define LCD_CS A3 // Chip Select goes to Analog 3
+#define LCD_CD A2 // Command/Data goes to Analog 2
+#define LCD_WR A1 // LCD Write goes to Analog 1
+#define LCD_RD A0 // LCD Read goes to Analog 0
+#define LCD_RESET -1 // Can alternately just connect to Arduino's reset pin
+
+
+
+#define Analog_Input A5 // For MQ2 Gas Sensor
+#define buzzer_pin 12   // For Buzzer
+
+int Flex_read;
+int ECG_Data ;
+int previous_ECG_data;
+int previous_Flex_read;
+int Flex_threshold = 10; // From Trial and Error
+int ECG_threshold = 100; // From Trial and Error
+int ECG_Difference;
+int Flex_read_Difference;
+float temp, rel_hum;
+float Temp_threshold = 35.0;
+float RH_threshold = 75.0;
+int LPG, CO, smoke;
+int LPG_threshold = 1000 ;
+int CO_threshold = 1000;  // CO2 level for children is <1000 PPM 
+int smoke_threshold = 1000 ;
+
+
+SoftwareSerial SIM900(18,19);
+Adafruit_HTU21DF htu = Adafruit_HTU21DF();
+MQ2 mq2(Analog_Input);
+
+// Increasing the length of the array list_1 and 2D array pos[][2] will define the ECG graph in a better manner
+int list_1[100] = {0};
+int list_1_length = 100;
+
+float Time, Time_ECG, Time_Flex;
+float sumTime_Flex = 0.0;
+float sumTime_ECG = 0.0;
+
+// For SMS portion
+int Temp_SMSstatus=0;
+int Humid_SMSstatus=0;
+int CO_SMSstatus=0;
+int LPG_SMSstatus=0;
+int Smoke_SMSstatus=0;
+int Flex_SMSstatus=0;
+int ECG_SMSstatus=0;
+
+// Assign human-readable names to some common 16-bit color values:
+#define BLACK   0x0000
+#define BLUE    0x001F
+#define RED     0xF800
+#define GREEN   0x07E0
+#define CYAN    0x07FF
+#define MAGENTA 0xF81F
+#define YELLOW  0xFFE0
+#define WHITE   0xFFFF
+#define ORANGE  0xFC00
+#define DKBLUE    0x000D
+#define DKTEAL    0x020C
+#define DKGREEN   0x03E0
+#define DKCYAN    0x03EF
+#define DKRED     0x6000
+#define DKMAGENTA 0x8008
+#define DKYELLOW  0x8400
+#define DKORANGE  0x8200
+#define DKPINK    0x9009
+#define DKPURPLE  0x4010
+#define DKGREY    0x4A49
+
+Adafruit_TFTLCD tft(LCD_CS, LCD_CD, LCD_WR, LCD_RD, LCD_RESET);
+
+
+
+void setup(void) {
+  // Serial1 because we are using TX1 (Pin 18) and RX1(Pin 18) of Arduino mega
+  SIM900.begin(9600);  // the Gsm baud rate  
+  Serial.begin(9600);
+  pinMode(buzzer_pin,OUTPUT); //Initializaing buzzer_pin or Digital pin 12 of Arduino Mega as output
+
+  if (!htu.begin()) {
+    Serial.println("Couldn't find sensor!");
+    while (1);
+  }
+
+ //LCD Display
+  tft.reset();
+  uint16_t identifier = tft.readID();
+  tft.begin(identifier);
+
+}
+
+
+
+void loop(void) {
+
+    previous_ECG_data = ECG_Data;
+    previous_Flex_read = Flex_read;
+    ECG_Difference = abs(ECG_Data - previous_ECG_data);
+    Flex_read_Difference = abs(Flex_read - previous_Flex_read);
+
+// Displaying Graph   
+    tft.setRotation(0); // 0 = 0deg, 1 = 90deg, 2 = 180deg, 3 = 270deg
+    tft.fillScreen(YELLOW);
+    tft.fillRect(0,0,320,480,YELLOW);
+    tft.setCursor(100, 320); 
+    Time = millis();
+    Time_ECG = millis();
+    
+    draw_line_chart_window("     ********Test******* ", (String) "Interval : "    + Time + " ms", list_1_length, -1000, 1000, DKCYAN); 
+    draw_line_chart(ECG_Data, list_1_length, 0, 500000, BLACK);  //draw_line_chart(int *list, int length, int low, int high (keep it above 100000 to keep the graph within the drawn cordinate), int color)
+    add_list(list_1, list_1_length, ECG_Data);
+
+    tft.setRotation(0);
+        tft.fillRect(0,340,190,480,DKCYAN);
+        tft.setCursor(0, 355);
+
+// ECG Data on Display
+        Time_ECG = millis();
+        if(ECG_Difference <= ECG_threshold)
+        {
+          sumTime_ECG = sumTime_ECG + Time_ECG;
+          tft.setTextColor(WHITE);  tft.setTextSize(2);
+          tft.print("ECG: ");
+          tft.print(ECG_Data = analogRead(A6));
+          tft.println();
+            if(sumTime_ECG>= 10000.0){
+              for(int i=0; i<=500; i++){digitalWrite(buzzer_pin,HIGH); delay(300); digitalWrite(buzzer_pin,LOW);}
+                if(ECG_SMSstatus==0){ ECG_SMSsend(); ECG_SMSstatus=1;}
+            }  
+          }
+
+        else{
+        tft.setTextColor(WHITE);  tft.setTextSize(2);
+        tft.print("ECG: ");
+        tft.print(ECG_Data = analogRead(A4));
+        tft.println();
+        ECG_SMSstatus=0;
+        sumTime_ECG=0.0;
+        }
+
+// Flex Sensor Data on Display
+        Time_Flex = millis();
+        if(Flex_read_Difference <= Flex_threshold)
+        {
+          sumTime_Flex = sumTime_Flex + Time_Flex;
+          tft.setTextColor(WHITE);  tft.setTextSize(2);
+          tft.print("FLEX: ");
+          tft.print(Flex_read = analogRead(A6));
+          tft.println();
+            if(sumTime_Flex>= 10000.0){
+              for(int i=0; i<=50; i++){digitalWrite(buzzer_pin,HIGH); delay(300); digitalWrite(buzzer_pin,LOW);}
+                if(Flex_SMSstatus==0){ Flex_SMSsend();Flex_SMSstatus=1;}
+            }  
+          }
+         
+
+        else{
+          tft.setTextColor(WHITE);  tft.setTextSize(2);
+          tft.print("FLEX: ");
+          tft.print(Flex_read = analogRead(A6));
+          tft.println();
+          Flex_SMSstatus=0;
+          sumTime_Flex=0.0;
+        }
+
+// Buzzer: for(int i=0; i<=50; i++){digitalWrite(buzzer_pin,HIGH); delay(300); digitalWrite(buzzer_pin,LOW);}
+
+// Temperature on Display
+        if(temp>=28){ 
+          tft.setTextColor(WHITE); tft.print("TEMP: "); tft.setTextColor(RED); tft.setTextSize(2); tft.print(temp=htu.readTemperature()); tft.print("C"); tft.println();
+
+          //For GSM Module
+          //To stop sending message continiously
+           if (Temp_SMSstatus==0){ 
+            Temp_SMSsend();
+            Temp_SMSstatus=1;
+            }
+          } 
+          
+        else{ 
+          tft.setTextColor(WHITE); tft.setTextSize(2); tft.print("TEMP: "); tft.print(temp=htu.readTemperature()); tft.print("C"); tft.println();
+          Temp_SMSstatus=0;
+          }
+        
+// Relative Humidity on Display
+        if(rel_hum>=50){ 
+          tft.setTextColor(WHITE); tft.print("RH: "); tft.setTextColor(RED); tft.setTextSize(2); tft.print(rel_hum=htu.readHumidity()); tft.print("%"); tft.println();
+
+          //For GSM Module
+          //To stop sending message continiously
+          if (Humid_SMSstatus==0){ 
+            Humid_SMSsend();
+            Humid_SMSstatus=1;
+            }
+          }
+        
+        else{ 
+          tft.setTextColor(WHITE); tft.setTextSize(2); tft.print("RH: "); tft.print(rel_hum=htu.readHumidity()); tft.print("%"); tft.println();
+          Humid_SMSstatus=0;
+          }
+
+// CO2 Level on Display
+        if(CO>=CO_threshold){
+          tft.setTextColor(WHITE); tft.print("CO2: "); tft.setTextColor(RED); tft.setTextSize(2); tft.print(CO=(int)mq2.readCO());tft.print(" PPM");tft.println(); 
+          //For GSM Module
+          //To stop sending message continiously
+          if (CO_SMSstatus==0){ 
+            CO_SMSsend();
+            CO_SMSstatus=1;
+            }
+          }
+        else{ 
+          tft.setTextColor(WHITE);  tft.setTextSize(2);tft.print("CO2: "); tft.print(CO=(int)mq2.readCO()); tft.print(" PPM"); tft.println();
+          CO_SMSstatus=0;
+          }
+     
+// SMOKE Level on Display
+        if(smoke>=smoke_threshold){
+          tft.setTextColor(WHITE); tft.print("SMOKE: "); tft.setTextColor(RED); tft.setTextSize(2); tft.print(smoke=(int)mq2.readSmoke());tft.print(" PPM");tft.println(); 
+          if(Smoke_SMSstatus==0){ 
+            Smoke_SMSsend();
+            Smoke_SMSstatus=1;
+            }
+          }
+        else{ 
+          tft.setTextColor(WHITE);  tft.setTextSize(2);tft.print("SMOKE: "); tft.print(smoke=(int)mq2.readSmoke()); tft.print(" PPM"); tft.println();
+          Smoke_SMSstatus=0;
+          }
+
+// LPG Level on Display
+        if(LPG>=LPG_threshold){
+          tft.setTextColor(WHITE); tft.print("LPG: "); tft.setTextColor(RED); tft.setTextSize(2); tft.print(LPG=(int)mq2.readLPG());tft.print(" PPM");tft.println(); 
+          
+          if(LPG_SMSstatus==0){ 
+            LPG_SMSsend();
+            LPG_SMSstatus=1;
+            }
+          }
+        else{ 
+          tft.setTextColor(WHITE);  tft.setTextSize(2);tft.print("LPG: "); tft.print(LPG=(int)mq2.readLPG()); tft.print(" PPM"); tft.println();
+          LPG_SMSstatus=1;
+          }
+        
+        delay(500);
+        tft.reset();
+
+// For Serial Monitor and Serila Plotter Illustration 
+    Serial.print("ECG Data: ");Serial.print(ECG_Data);
+    Serial.print(" Previous_ECG_Data: ");Serial.print(previous_ECG_data);
+    Serial.print(" ECG Diff: ");Serial.print(ECG_Difference);
+    Serial.print(" Flex Data: ");Serial.print(Flex_read);
+    Serial.print(" Temp: "); Serial.print(temp); Serial.print(" C ");
+    Serial.print("Humidity: "); Serial.print(rel_hum); Serial.print(" \% ");
+    Serial.print("CO2: "); Serial.print(CO); Serial.print(" PPM ");
+    Serial.print("SMOKE: "); Serial.print(smoke); Serial.print(" PPM ");
+    Serial.print("LPG: "); Serial.print(LPG); Serial.print(" PPM ");Serial.println("\n");
+
+
+}
+
+
+
+// This function is used for GSM module (SMS)
+// For more information on AT commands: 
+
+void ECG_SMSsend(){
+SIM900.println("AT");
+delay(10);
+SIM900.println("AT+CBAND=ALL_BAND");  // To Make it work for operators with higher generation
+delay(10);
+SIM900.println("AT+CMGF=1");
+delay(20);
+SIM900.print("AT+CMGS=\"");
+SIM900.print("+16465089348"); // mobile number with country code
+SIM900.println("\"");
+delay(50);
+SIM900.println("ECG Stopped"); // Type in your text message here
+delay(50);
+SIM900.println((char)26); // This is to terminate the message
+delay(50);
+}
+
+
+void Flex_SMSsend(){
+SIM900.println("AT");
+delay(10);
+SIM900.println("AT+CBAND=ALL_BAND");  // To Make it work for operators with higher generation
+delay(10);
+SIM900.println("AT+CMGF=1");
+delay(20);
+SIM900.print("AT+CMGS=\"");
+SIM900.print("+16465089348"); // mobile number with country code
+SIM900.println("\"");
+delay(50);
+SIM900.println("Flex Stopped"); // Type in your text message here
+delay(50);
+SIM900.println((char)26); // This is to terminate the message
+delay(50);
+}
+
+
+
+void Temp_SMSsend(){
+SIM900.println("AT");
+delay(10);
+SIM900.println("AT+CBAND=ALL_BAND");  // To Make it work for operators with higher generation
+delay(10);
+SIM900.println("AT+CMGF=1");
+delay(20);
+SIM900.print("AT+CMGS=\"");
+SIM900.print("+16465089348"); // mobile number with country code
+SIM900.println("\"");
+delay(50);
+SIM900.println("Temprature crossed the limit"); // Type in your text message here
+delay(50);
+SIM900.println((char)26); // This is to terminate the message
+delay(50);
+}
+
+void Humid_SMSsend(){
+SIM900.println("AT");
+delay(10);
+SIM900.println("AT+CBAND=ALL_BAND");  // To Make it work for operators with higher generation
+delay(10);
+SIM900.println("AT+CMGF=1");
+delay(20);
+SIM900.print("AT+CMGS=\"");
+SIM900.print("+16465089348"); // mobile number with country code
+SIM900.println("\"");
+delay(50);
+SIM900.println("Humidity crossed the limit"); // Type in your text message here
+delay(50);
+SIM900.println((char)26); // This is to terminate the message
+delay(50);
+}
+
+void CO_SMSsend(){
+SIM900.println("AT");
+delay(10);
+SIM900.println("AT+CBAND=ALL_BAND");  // To Make it work for operators with higher generation
+delay(10);
+SIM900.println("AT+CMGF=1");
+delay(20);
+SIM900.print("AT+CMGS=\"");
+SIM900.print("+16465089348"); // mobile number with country code
+SIM900.println("\"");
+delay(50);
+SIM900.println("CO2 has crossed the limit"); // Type in your text message here
+delay(50);
+SIM900.println((char)26); // This is to terminate the message
+delay(50);
+}
+
+
+void LPG_SMSsend(){
+SIM900.println("AT");
+delay(10);
+SIM900.println("AT+CBAND=ALL_BAND");  // To Make it work for operators with higher generation
+delay(10);
+SIM900.println("AT+CMGF=1");
+delay(20);
+SIM900.print("AT+CMGS=\"");
+SIM900.print("+16465089348"); // mobile number with country code
+SIM900.println("\"");
+delay(50);
+SIM900.println("LPG has crossed the limit"); // Type in your text message here
+delay(50);
+SIM900.println((char)26); // This is to terminate the message
+delay(50);
+}
+
+
+void Smoke_SMSsend(){
+SIM900.println("AT");
+delay(10);
+SIM900.println("AT+CBAND=ALL_BAND");  // To Make it work for operators with higher generation
+delay(10);
+SIM900.println("AT+CMGF=1");
+delay(20);
+SIM900.print("AT+CMGS=\"");
+SIM900.print("+16465089348"); // mobile number with country code
+SIM900.println("\"");
+delay(50);
+SIM900.println("Smoke has crossed the limit"); // Type in your text message here
+delay(50);
+SIM900.println((char)26); // This is to terminate the message
+delay(50);
+}
+
+
+// This function is used for LCD Display
+void add_list(int *list, int length, int num)
+{
+    for (int i = length - 1; i >= 0; i--)
+    {
+        *(list + i + 1) = *(list + i);
+    }
+    *list = num;
+}
+
+
+
+// This function is used for LCD Display
+void draw_line_chart_window(String text1, String text2, int length, int low, int high, int color)
+{
+    //draw rect and unit
+    //tft.drawRect(20, 20, 280, 200, color);
+    tft.drawLine(30, 20, 30, 220, color); // Drawing a line from Point(x1,y1) = (30,20) and (x2,y2) = (30,220)
+    tft.drawLine(30, 220, 300, 220, color);
+ 
+    tft.drawLine(20, 20, 30, 20, color);
+    tft.drawLine(20, 120, 30, 120, color);
+ 
+    tft.setTextColor(color);
+    tft.setTextSize(1);
+ 
+    tft.setCursor(0, 10);
+    tft.println(high);
+ 
+    tft.setCursor(80, 10);
+    tft.println(text1);
+ 
+    tft.setCursor(0, 110);
+    tft.println((high + low) / 2);
+ 
+    tft.setCursor(0, 210);
+    tft.println(low);
+ 
+    tft.setCursor(80, 230);
+    tft.println(text2);
+
+ // This portion provides the per unit markers on the X axis
+    int x_start = 32; // Starts from 32 pixel
+    int x_unit = 295 / (length - 1);
+    for (int i = 0; i < length; i++)
+    {
+        int x = x_start + x_unit * i;
+        if (i != 0 && i != length - 1)
+            tft.drawLine(x, 220, x, 225, color);
+    }
+}
+
+
+
+// This function is used for LCD Display
+void draw_line_chart(int *list, int length, int low, int high, int color)
+{
+    //list to position
+    int pos[100][2] = {0};
+    int detail = 100;
+    int x_start = 32; //(x,y) = (0,0) = (32 pixel, 218 pixel)
+    int y_start = 118; // Moves the graph up and down
+    int x_unit = 210 / (length - 1); // It can squeeze or expand the graph
+    int y_unit = -110 / (detail - 1); // Squzzes or expand the graph on y axis
+    for (int i = 0; i < length; i++)
+    {
+        pos[i][0] = x_start + i * x_unit;
+        int y = map(*(list + i), low, high, 0, detail);
+        if (y > detail)
+            y = detail;
+        pos[i][1] = y_start + y_unit * y;
+    }
+ 
+    //draw line chart
+    for (int i = 0; i < length - 1; i++)
+    {
+        tft.drawLine(pos[i][0], pos[i][1], pos[i + 1][0], pos[i + 1][1], color);
+    }
+}
